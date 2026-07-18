@@ -1,14 +1,15 @@
 const express = require('express');
 const cors = require('cors');
-const sqlite3 = require('sqlite3').verbose();
+const Database = require('better-sqlite3');
 
 const app = express();
 app.use(cors()); // lets your Flutter app call this from a different origin/device
-const PORT = 3000;
+const PORT = process.env.PORT || 3000;
 
-const db = new sqlite3.Database('./prayers.db');
+const db = new Database('./prayers.db');
 
-db.run(`
+// Create the table if it doesn't already exist
+db.exec(`
   CREATE TABLE IF NOT EXISTS prayer_times (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     city TEXT,
@@ -38,31 +39,30 @@ async function fetchFromAladhan(city, country, date) {
 
 app.get('/api/prayer-times', async (req, res) => {
   const { city, country, date } = req.query;
-  console.log(req.query);
-  // Step A: check if we already have it saved
-  db.get(
-    `SELECT * FROM prayer_times WHERE city = ? AND date = ?`,
-    [city, date],
-    async (err, row) => {
-      if (row) {
-        return res.json(row); // already cached — return immediately
-      }
 
-      // Step B: not found, so fetch from Aladhan and save it
-      try {
-        const times = await fetchFromAladhan(city, country, date);
-        db.run(
-          `INSERT INTO prayer_times (city, date, fajr, dhuhr, asr, maghrib, isa)
-           VALUES (?, ?, ?, ?, ?, ?, ?)`,
-          [city, date, times.fajr, times.dhuhr, times.asr, times.maghrib, times.isha]
-        );
-        res.json({ city, date, ...times });
-      } catch (e) {
-        console.error(e); // add this line
-        res.status(500).json({ error: 'Could not fetch prayer times' });
-     }
+  try {
+    // Step A: check if we already have it saved
+    const existing = db
+      .prepare(`SELECT * FROM prayer_times WHERE city = ? AND date = ?`)
+      .get(city, date);
+
+    if (existing) {
+      return res.json(existing); // already cached — return immediately
     }
-  );
+
+    // Step B: not found, so fetch from Aladhan and save it
+    const times = await fetchFromAladhan(city, country, date);
+
+    db.prepare(
+      `INSERT INTO prayer_times (city, date, fajr, dhuhr, asr, maghrib, isha)
+       VALUES (?, ?, ?, ?, ?, ?, ?)`
+    ).run(city, date, times.fajr, times.dhuhr, times.asr, times.maghrib, times.isha);
+
+    res.json({ city, date, ...times });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ error: 'Could not fetch prayer times' });
+  }
 });
 
 app.listen(PORT, () => {
